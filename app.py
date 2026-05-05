@@ -1,6 +1,7 @@
 """
 VERA-TX: Verification Engine for Results & Accountability - Texas
 Type 4 Dyslexia Screening using TELPAS and STAAR Assessment Data
+TEKS Curriculum Standards Browser
 
 H-EDU.Solutions | https://h-edu.solutions
 """
@@ -10,6 +11,14 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+import os
+
+# Import TEKS database
+try:
+    from teks_fetcher import TEKSDatabase
+    TEKS_AVAILABLE = os.path.exists(os.path.join(os.path.dirname(__file__), "teks_data.db"))
+except ImportError:
+    TEKS_AVAILABLE = False
 
 # ============================================================================
 # CONFIGURATION
@@ -650,12 +659,118 @@ def render_export(telpas_df, staar_df, districts_df):
         )
 
 # ============================================================================
+# TEKS BROWSER
+# ============================================================================
+
+def render_teks_browser():
+    """Render the TEKS curriculum standards browser."""
+    st.header("TEKS Curriculum Standards Browser")
+
+    if not TEKS_AVAILABLE:
+        st.warning("TEKS data not available. Run `python teks_fetcher.py sync` to fetch TEKS from TEA.")
+        return
+
+    db = TEKSDatabase()
+    stats = db.get_stats()
+
+    # Stats row
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Chapters", stats['documents'])
+    with col2:
+        st.metric("Total Standards", f"{stats['items']:,}")
+    with col3:
+        st.metric("Student Expectations", f"{stats['student_expectations']:,}")
+    with col4:
+        if stats['last_sync']:
+            sync_date = stats['last_sync'][:10]
+            st.metric("Last Sync", sync_date)
+
+    st.divider()
+
+    # Two-column layout: Chapter selection and search
+    col1, col2 = st.columns([2, 1])
+
+    with col2:
+        st.subheader("Search TEKS")
+        search_query = st.text_input("Search standards", placeholder="e.g., 'fractions' or '111.5'")
+        if search_query:
+            results = db.search_items(search_query, limit=50)
+            if results:
+                st.write(f"Found {len(results)} results:")
+                for item in results:
+                    with st.expander(f"**{item['human_coding_scheme'] or 'N/A'}** - {item['item_type']}"):
+                        st.write(item['full_statement'])
+                        st.caption(f"Chapter: {item['document_title']}")
+            else:
+                st.info("No results found.")
+
+    with col1:
+        st.subheader("Browse by Chapter")
+
+        # Get all documents
+        documents = db.get_documents()
+
+        # Chapter selector
+        chapter_options = {doc['title']: doc['identifier'] for doc in documents}
+        selected_chapter = st.selectbox(
+            "Select Chapter",
+            options=list(chapter_options.keys())
+        )
+
+        if selected_chapter:
+            doc_id = chapter_options[selected_chapter]
+
+            # Get item types for this chapter
+            item_types = db.get_item_types(doc_id)
+
+            # Filter by item type
+            type_filter = st.selectbox(
+                "Filter by Type",
+                options=["All Types"] + item_types
+            )
+
+            # Get items
+            if type_filter == "All Types":
+                items = db.get_items_by_document(doc_id)
+            else:
+                items = db.get_items_by_document(doc_id, item_type=type_filter)
+
+            st.write(f"Showing {len(items)} items")
+
+            # Display items
+            for item in items[:100]:  # Limit display for performance
+                coding = item['human_coding_scheme'] or ""
+                item_type = item['item_type'] or ""
+                statement = item['full_statement'] or ""
+
+                # Color-code by type
+                if item_type == "Student Expectation":
+                    badge_color = TX_RED
+                elif item_type in ["Grade/Course", "Subchapter"]:
+                    badge_color = TX_BLUE
+                else:
+                    badge_color = "#666"
+
+                st.markdown(f"""
+                <div style="padding: 10px; margin: 5px 0; border-left: 4px solid {badge_color}; background: #f9f9f9;">
+                    <span style="background: {badge_color}; color: white; padding: 2px 8px; font-size: 0.75rem; border-radius: 3px;">{item_type}</span>
+                    <strong style="margin-left: 10px;">{coding}</strong>
+                    <p style="margin: 8px 0 0 0; color: #333;">{statement}</p>
+                </div>
+                """, unsafe_allow_html=True)
+
+            if len(items) > 100:
+                st.info(f"Showing first 100 of {len(items)} items. Use search or type filter to narrow results.")
+
+
+# ============================================================================
 # MAIN APP
 # ============================================================================
 
 def main():
     st.set_page_config(
-        page_title="VERA-TX | Texas Type 4 Detection",
+        page_title="VERA-TX | TEKS Standards & Type 4 Detection",
         page_icon="⭐",
         layout="wide"
     )
@@ -702,15 +817,19 @@ def main():
 
     st.sidebar.divider()
 
+    # Navigation options based on TEKS availability
+    nav_options = ["Overview", "TEKS Browser", "TELPAS Analysis", "Type 4 Detection", "STAAR Analysis", "Export Data"]
+
     page = st.sidebar.radio(
         "Navigation",
-        ["Overview", "TELPAS Analysis", "Type 4 Detection", "STAAR Analysis", "Export Data"]
+        nav_options
     )
 
     st.sidebar.divider()
 
     st.sidebar.markdown("""
     **Data Sources:**
+    - TEKS (Curriculum Standards)
     - TELPAS (English Language Proficiency)
     - STAAR (Academic Readiness)
     - TEA Accountability (A-F Ratings)
@@ -727,6 +846,8 @@ def main():
     # Render selected page
     if page == "Overview":
         render_overview(districts_df, telpas_df, staar_df)
+    elif page == "TEKS Browser":
+        render_teks_browser()
     elif page == "TELPAS Analysis":
         render_telpas_analysis(telpas_df, districts_df)
     elif page == "Type 4 Detection":
